@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Paper Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #f8fafc;
+            --bg-card: #ffffff;
+            --bg-card2: #f1f5f9;
+            --accent: #2563eb;
+            --accent-soft: #3b82f6;
+            --green: #16a34a;
+            --red: #dc2626;
+            --amber: #d97706;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --border: #e2e8f0;
+            --radius: 12px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background-color: var(--bg-primary); color: var(--text-primary); font-family: 'Inter', sans-serif; display: flex; height: 100vh; overflow: hidden; }
+        h1, h2, h3 { font-family: 'DM Serif Display', serif; font-weight: normal; }
+        
+        /* Layout */
+        .sidebar { width: 300px; background: var(--bg-card); border-right: 1px solid var(--border); padding: 20px; overflow-y: auto; flex-shrink: 0; }
+        .main-content { flex-grow: 1; padding: 30px 40px; overflow-y: auto; background: var(--bg-primary); }
+        
+        /* UI Elements */
+        .warning-banner { background: linear-gradient(90deg, #dbeafe, #eff6ff); border-left: 4px solid var(--accent); padding: 12px 18px; border-radius: 0 8px 8px 0; margin-bottom: 20px; font-size: 0.85rem; color: #1e3a8a; }
+        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .card-title { font-family: 'DM Serif Display', serif; font-size: 1.1rem; color: var(--text-primary); margin-bottom: 12px; }
+        
+        .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; }
+        .badge-ok { background: #dcfce7; color: #16a34a; border: 1px solid #bbf7d0; }
+        .badge-warning { background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; }
+        
+        /* Inputs & Buttons */
+        label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; margin-top: 12px; }
+        input[type="text"], input[type="number"], select, textarea { width: 100%; background: var(--bg-card); border: 1px solid var(--border); color: var(--text-primary); border-radius: 8px; padding: 10px; font-family: inherit; font-size: 0.9rem; }
+        textarea { resize: vertical; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px #bfdbfe; }
+        
+        button { background: linear-gradient(135deg, var(--accent), var(--accent-soft)); color: #fff; border: none; border-radius: 8px; font-weight: 600; padding: 10px 22px; cursor: pointer; transition: opacity 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-size: 0.9rem; margin-top: 10px;}
+        button:hover { opacity: 0.9; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+        
+        /* Tabs */
+        .tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 24px; overflow-x: auto; scrollbar-width: none; }
+        .tab-btn { background: none; border: none; color: var(--text-secondary); padding: 12px 20px; cursor: pointer; font-weight: 500; font-size: 0.9rem; border-bottom: 2px solid transparent; border-radius: 0; white-space: nowrap; margin: 0; }
+        .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+        .tab-content { display: none; animation: fadeIn 0.3s; }
+        .tab-content.active { display: block; }
+        
+        /* Progress sidebar */
+        .step { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; color: var(--text-secondary); }
+        .step-dot-done { width: 10px; height: 10px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+        .step-dot-todo { width: 10px; height: 10px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+        
+        /* Ethics cards */
+        .ethics-green { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px; }
+        .ethics-red { background: #fef2f2; border: 1px solid #fecaca; border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px; }
+        .ethics-title-green { color: #16a34a; font-weight: 700; margin-bottom: 6px; }
+        .ethics-title-red { color: #dc2626; font-weight: 700; margin-bottom: 6px; }
+        
+        /* Outputs */
+        .output-box { background: var(--bg-card2); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 22px; white-space: pre-wrap; font-size: 0.9rem; line-height: 1.7; margin-top: 12px; }
+        .metric { background: var(--bg-card2); padding: 12px; border-radius: 8px; text-align: center; }
+        .metric-val { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+        .metric-label { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+        
+        hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+        .hidden { display: none !important; }
+        .spinner { border: 3px solid rgba(255,255,255,0.3); border-radius: 50%; border-top: 3px solid #fff; width: 16px; height: 16px; animation: spin 1s linear infinite; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.85rem;}
+        th, td { border: 1px solid var(--border); padding: 8px; text-align: left; }
+        th { background: var(--bg-card2); }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <h2 style="font-size: 1.4rem; margin-bottom: 20px;">📚 Research Assistant</h2>
+        <hr>
+        <h3>⚙️ Research Settings</h3>
+        <label>Citation Style</label>
+        <select id="citation_style">
+            <option>APA</option><option>MLA</option><option>Chicago</option><option>IEEE</option>
+        </select>
+        <label>Target Journal</label>
+        <input type="text" id="target_journal" placeholder="e.g. PLOS ONE">
+        <div class="grid-2">
+            <div>
+                <label>Pages</label>
+                <input type="number" id="page_count" value="10" min="4" max="40">
+            </div>
+            <div>
+                <label>Words</label>
+                <input type="number" id="word_count" value="4000" min="1000" step="500">
+            </div>
+        </div>
+        <hr>
+        <h3>📊 Project Progress</h3>
+        <div id="progress_container">
+            </div>
+    </div>
+
+    <div class="main-content">
+        <div class="warning-banner">⚠️ <strong>AI-generated content must be reviewed and verified before submission.</strong> This tool assists — it does not write your paper. You are responsible for all content.</div>
+        <h1 style="font-size: 2rem; margin-bottom: 4px;">AI Research Paper Assistant</h1>
+        <p style="color: var(--text-secondary); margin-bottom: 24px;">Guiding you through ethical, structured academic writing — one stage at a time.</p>
+
+        <div class="tabs" id="tab_headers">
+            <button class="tab-btn active" data-tab="setup">📋 Setup</button>
+            <button class="tab-btn" data-tab="lit">📄 Literature</button>
+            <button class="tab-btn" data-tab="gap">🔍 Research Gap</button>
+            <button class="tab-btn" data-tab="thesis">🎯 Thesis</button>
+            <button class="tab-btn" data-tab="outline">📝 Outline</button>
+            <button class="tab-btn" data-tab="sections">✍️ Section Writer</button>
+            <button class="tab-btn" data-tab="citations">🔖 Citations</button>
+            <button class="tab-btn" data-tab="ethics">⚖️ Ethics</button>
+            <button class="tab-btn" data-tab="export">📦 Export</button>
+        </div>
+
+        <div class="tab-content active" id="tab_setup">
+            <h2>📋 Project Setup</h2>
+            <p style="color:var(--text-secondary);margin-bottom:15px;">Fill in the details about your research paper.</p>
+            <div class="grid-2">
+                <div>
+                    <label>Paper Title</label>
+                    <input type="text" id="title" placeholder="e.g. The Impact of Social Media...">
+                    <label>Research Topic (2–4 sentences)</label>
+                    <textarea id="topic" rows="4" placeholder="Describe your topic briefly..."></textarea>
+                    <label>Keywords (comma-separated)</label>
+                    <input type="text" id="keywords" placeholder="social media, students">
+                </div>
+                <div>
+                    <label>Research Type</label>
+                    <select id="research_type">
+                        <option>Theory Paper</option><option>Survey</option><option>Case Study</option><option>Experiment</option><option>Literature Review</option>
+                    </select>
+                    <label>Your Name (for export)</label>
+                    <input type="text" id="author_name" placeholder="Jane Smith">
+                    <label>Institution</label>
+                    <input type="text" id="institution" placeholder="University of ...">
+                </div>
+            </div>
+            <button onclick="saveSetup()">✅ Save Project Setup</button>
+            <div id="setup_summary" class="card hidden" style="margin-top:20px;">
+                <div class="card-title">Project Summary</div>
+                <div class="grid-3">
+                    <div class="metric"><div class="metric-val" id="sum_type"></div><div class="metric-label">Type</div></div>
+                    <div class="metric"><div class="metric-val" id="sum_pages"></div><div class="metric-label">Target Pages</div></div>
+                    <div class="metric"><div class="metric-val" id="sum_words"></div><div class="metric-label">Target Words</div></div>
+                </div>
+                <p style="margin-top:15px"><strong>Title:</strong> <span id="sum_title"></span></p>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab_lit">
+            <h2>📄 Literature Upload</h2>
+            <p style="color:var(--text-secondary);margin-bottom:15px;">Upload PDF papers to build a literature matrix.</p>
+            <div class="card">
+                <input type="file" id="pdf_uploads" multiple accept=".pdf" style="margin-bottom: 10px;">
+                <button onclick="uploadPDFs()" id="btn_upload">
+                    <div class="spinner" id="spin_upload"></div> 📥 Extract Literature
+                </button>
+            </div>
+            <div id="lit_results" class="hidden">
+                <h3>📊 Literature Matrix</h3>
+                <div style="overflow-x: auto;">
+                    <table id="lit_table">
+                        <thead><tr><th>Title</th><th>Authors</th><th>Year</th><th>Key Findings</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab_gap">
+            <h2>🔍 Research Gap Finder</h2>
+            <button onclick="generateGaps()" id="btn_gaps">
+                <div class="spinner" id="spin_gaps"></div> 🔍 Generate Research Gaps
+            </button>
+            <div id="gap_results" class="output-box hidden"></div>
+            <div id="gap_select_area" class="hidden" style="margin-top:20px;">
+                <label>Paste or type your chosen research gap here:</label>
+                <textarea id="gap_input" rows="3"></textarea>
+                <button onclick="saveGap()">💾 Save Gap</button>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab_thesis">
+            <h2>🎯 Thesis Builder</h2>
+            <div class="card hidden" id="thesis_gap_display"><strong>Your Gap:</strong> <span id="display_gap"></span></div>
+            <button onclick="generateThesis()" id="btn_thesis">
+                <div class="spinner" id="spin_thesis"></div> 🎯 Generate Thesis Options
+            </button>
+            <div id="thesis_results" class="output-box hidden"></div>
+            <div id="thesis_select_area" class="hidden" style="margin-top:20px;">
+                <label>Your Thesis Statement (in your own words):</label>
+                <textarea id="thesis_input" rows="3"></textarea>
+                <button onclick="saveThesis()">💾 Save Thesis</button>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab_outline">
+            <h2>📝 Outline Builder</h2>
+            <div class="card hidden" id="outline_thesis_display"><strong>Your Thesis:</strong> <span id="display_thesis"></span></div>
+            <button onclick="generateOutline()" id="btn_outline">
+                <div class="spinner" id="spin_outline"></div> 📝 Generate Outline
+            </button>
+            <div id="outline_edit_area" class="hidden" style="margin-top:20px;">
+                <label>Edit your outline here:</label>
+                <textarea id="outline_input" rows="12"></textarea>
+                <button onclick="saveOutline()">💾 Save Outline</button>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab_sections">
+            <h2>✍️ Section Writer</h2>
+            <div class="warning-banner" style="background: #fef2f2; border-color: var(--red); color: var(--red);">🚫 <strong>This tool never generates a complete paper.</strong> Each section must be reviewed by you.</div>
+            <label>Which section do you want to draft?</label>
+            <select id="section_choice">
+                <option>Introduction</option><option>Literature Review</option><option>Methodology</option><option>Discussion</option><option>Conclusion</option>
+            </select>
+            <label>Your notes (optional):</label>
+            <textarea id="section_notes" rows="3"></textarea>
+            
+            <button onclick="draftSection()" id="btn_draft">
+                <div class="spinner" id="spin_draft"></div> ✍️ Draft Section
+            </button>
+            
+            <div id="draft_edit_area" class="hidden" style="margin-top:20px;">
+                <label>Edit the draft below before saving:</label>
+                <textarea id="draft_input" rows="10"></textarea>
+                <button onclick="saveDraft()">💾 Save Section</button>
+            </div>
+            
+            <div id="saved_sections_area" style="margin-top:30px;">
+                <h3>💾 Saved Sections</h3>
+                <div id="saved_sections_list"></div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab_citations">
+            <h2>🔖 Citation Validator</h2>
+            <div class="card">
+                <label>Enter DOI to Validate via CrossRef</label>
+                <input type="text" id="doi_input" placeholder="10.1038/s41586-021-03819-2">
+                <button onclick="validateDOI()" id="btn_doi">
+                    <div class="spinner" id="spin_doi"></div> 🔍 Validate DOI
+                </button>
+                <div id="doi_result" class="output-box hidden"></div>
+                <button id="btn_add_ref" class="hidden" onclick="addReference()">➕ Add to References</button>
+            </div>
+            
+            <h3>📚 Validated References</h3>
+            <div id="refs_list"></div>
+
+            <hr>
+            <h3>🔎 Similarity Check</h3>
+            <textarea id="sim_text" rows="4" placeholder="Paste paragraph to check against uploaded literature..."></textarea>
+            <button onclick="checkSimilarity()" id="btn_sim">
+                <div class="spinner" id="spin_sim"></div> 🔎 Run Check
+            </button>
+            <div id="sim_result" class="hidden" style="margin-top: 10px; font-weight: bold;"></div>
+        </div>
+
+        <div class="tab-content" id="tab_ethics">
+            <h2>⚖️ Academic Ethics Dashboard</h2>
+            <div class="grid-2">
+                <div class="ethics-green">
+                    <div class="ethics-title-green">✅ GREEN ZONE — Ethical AI Use</div>
+                    <ul style="margin-left: 20px; font-size: 0.9rem; line-height: 1.6;">
+                        <li><strong>💡 Brainstorming</strong>: Ideas and perspectives.</li>
+                        <li><strong>📋 Outlining</strong>: Structuring sections.</li>
+                        <li><strong>✏️ Grammar Help</strong>: Fixing clarity.</li>
+                        <li><strong>🔖 Citation Formatting</strong>: Auto-formatting verified references.</li>
+                    </ul>
+                </div>
+                <div class="ethics-red">
+                    <div class="ethics-title-red">🚫 RED ZONE — Misconduct</div>
+                    <ul style="margin-left: 20px; font-size: 0.9rem; line-height: 1.6;">
+                        <li><strong>🤖 AI as Co-Author</strong>: Never list AI as author.</li>
+                        <li><strong>📚 Fake References</strong>: CrossRef verify everything.</li>
+                        <li><strong>🔬 Fabricated Results</strong>: Fraudulent data.</li>
+                        <li><strong>📄 Unreviewed Text</strong>: Submitting without review.</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="card" style="background:#1e1b4b; color:#c7d2fe; border-color:#4338ca;">
+                <strong>📢 AI Disclosure Statement</strong><br><br>
+                Generative AI tools were used for brainstorming, outlining, language refinement, and citation formatting. All content was reviewed and verified by the authors, who remain fully responsible for the accuracy and integrity of the final manuscript.
+            </div>
+            <div class="card">
+                <h3>📜 Ethical Commitments Checklist</h3>
+                <label><input type="checkbox"> I will review all AI-generated content.</label>
+                <label><input type="checkbox"> I will verify every citation.</label>
+                <label><input type="checkbox"> I will not list AI as an author.</label>
+                <label><input type="checkbox"> I will not fabricate data.</label>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab_export">
+            <h2>📦 Export to Overleaf / LaTeX</h2>
+            <div class="grid-2">
+                <div>
+                    <label>LaTeX Template</label>
+                    <select id="export_template">
+                        <option>Basic Article</option><option>IEEE</option><option>Springer</option><option>APA</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Confirm Title</label>
+                    <input type="text" id="export_title">
+                </div>
+            </div>
+            <button onclick="exportProject()" style="margin-top: 20px;" id="btn_export">
+                <div class="spinner" id="spin_export"></div> 📦 Generate Export ZIP
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- State Management ---
+        const state = {
+            setup: false, lit: false, gap: false, thesis: false, outline: false, sections_done: false, citations: false,
+            topic: "", title: "", keywords: "", research_type: "Theory Paper",
+            gap_text: "", thesis_text: "", outline_text: "",
+            literature: [], // Array of {title, abstract, text, year, authors}
+            sections: {},   // { "Introduction": "text...", ... }
+            references: [], // Array of crossref dicts
+            current_doi_data: null
+        };
+
+        const progressLabels = [
+            {k:'setup', l:'1. Project Setup'}, {k:'lit', l:'2. Literature'}, {k:'gap', l:'3. Research Gap'},
+            {k:'thesis', l:'4. Thesis'}, {k:'outline', l:'5. Outline'}, {k:'sections_done', l:'6. Sections'}, {k:'citations', l:'7. Citations'}
+        ];
+
+        // --- UI Utils ---
+        function updateProgress() {
+            const container = document.getElementById('progress_container');
+            container.innerHTML = '';
+            progressLabels.forEach(p => {
+                const isDone = state[p.k];
+                container.innerHTML += `<div class="step"><div class="${isDone ? 'step-dot-done' : 'step-dot-todo'}"></div><span style="color:${isDone ? 'var(--text-primary)' : 'var(--text-secondary)'}">${p.l}</span></div>`;
+            });
+        }
+        updateProgress();
+
+        function toggleBtn(btnId, spinId, isLoading) {
+            const btn = document.getElementById(btnId);
+            const spin = document.getElementById(spinId);
+            if (isLoading) { btn.disabled = true; spin.style.display = 'inline-block'; }
+            else { btn.disabled = false; spin.style.display = 'none'; }
+        }
+
+        // --- Tabs Logic ---
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById('tab_' + btn.dataset.tab).classList.add('active');
+            });
+        });
+
+        // --- Tab 1: Setup ---
+        function saveSetup() {
+            state.title = document.getElementById('title').value;
+            state.topic = document.getElementById('topic').value;
+            state.keywords = document.getElementById('keywords').value;
+            state.research_type = document.getElementById('research_type').value;
+            
+            if(!state.title || !state.topic) { alert("Please enter Title and Topic."); return; }
+            
+            state.setup = true;
+            document.getElementById('setup_summary').classList.remove('hidden');
+            document.getElementById('sum_type').innerText = state.research_type;
+            document.getElementById('sum_pages').innerText = document.getElementById('page_count').value;
+            document.getElementById('sum_words').innerText = document.getElementById('word_count').value;
+            document.getElementById('sum_title').innerText = state.title;
+            document.getElementById('export_title').value = state.title;
+            updateProgress();
+            alert("Setup saved!");
+        }
+
+        // --- Tab 2: Literature ---
+        async function uploadPDFs() {
+            const files = document.getElementById('pdf_uploads').files;
+            if(files.length === 0) return alert("Select PDFs first.");
+            
+            toggleBtn('btn_upload', 'spin_upload', true);
+            const formData = new FormData();
+            for(let i=0; i<files.length; i++) formData.append("files", files[i]);
+            
+            try {
+                const res = await fetch('/api/extract_pdfs', { method: 'POST', body: formData });
+                const data = await res.json();
+                state.literature = data.papers || [];
+                state.lit = true;
+                
+                const tbody = document.querySelector('#lit_table tbody');
+                tbody.innerHTML = '';
+                state.literature.forEach(p => {
+                    tbody.innerHTML += `<tr><td>${p.title.substring(0,40)}</td><td>${p.authors.substring(0,20)}</td><td>${p.year}</td><td><input type="text" placeholder="Notes..."></td></tr>`;
+                });
+                document.getElementById('lit_results').classList.remove('hidden');
+                updateProgress();
+            } catch (e) { alert("Error extracting PDFs"); }
+            toggleBtn('btn_upload', 'spin_upload', false);
+        }
+
+        // --- Tab 3: Gap ---
+        async function generateGaps() {
+            if(!state.setup) return alert("Complete setup first.");
+            toggleBtn('btn_gaps', 'spin_gaps', true);
+            
+            let context = state.literature.slice(0,5).map(p => `- ${p.title} (${p.year}): ${p.abstract.substring(0,200)}`).join('\n');
+            try {
+                const res = await fetch('/api/generate_gaps', {
+                    method: 'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({topic: state.topic, research_type: state.research_type, lit_context: context})
+                });
+                const data = await res.json();
+                document.getElementById('gap_results').innerText = data.result;
+                document.getElementById('gap_results').classList.remove('hidden');
+                document.getElementById('gap_select_area').classList.remove('hidden');
+            } catch(e) { alert("Error generating gaps."); }
+            toggleBtn('btn_gaps', 'spin_gaps', false);
+        }
+        function saveGap() {
+            state.gap_text = document.getElementById('gap_input').value;
+            if(!state.gap_text) return;
+            state.gap = true;
+            document.getElementById('thesis_gap_display').classList.remove('hidden');
+            document.getElementById('display_gap').innerText = state.gap_text;
+            updateProgress(); alert("Gap saved!");
+        }
+
+        // --- Tab 4: Thesis ---
+        async function generateThesis() {
+            if(!state.gap) return alert("Save a gap first.");
+            toggleBtn('btn_thesis', 'spin_thesis', true);
+            try {
+                const res = await fetch('/api/generate_thesis', {
+                    method: 'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({topic: state.topic, research_type: state.research_type, gap: state.gap_text})
+                });
+                const data = await res.json();
+                document.getElementById('thesis_results').innerText = data.result;
+                document.getElementById('thesis_results').classList.remove('hidden');
+                document.getElementById('thesis_select_area').classList.remove('hidden');
+            } catch(e) { alert("Error generating thesis."); }
+            toggleBtn('btn_thesis', 'spin_thesis', false);
+        }
+        function saveThesis() {
+            state.thesis_text = document.getElementById('thesis_input').value;
+            if(!state.thesis_text) return;
+            state.thesis = true;
+            document.getElementById('outline_thesis_display').classList.remove('hidden');
+            document.getElementById('display_thesis').innerText = state.thesis_text;
+            updateProgress(); alert("Thesis saved!");
+        }
+
+        // --- Tab 5: Outline ---
+        async function generateOutline() {
+            if(!state.thesis) return alert("Save a thesis first.");
+            toggleBtn('btn_outline', 'spin_outline', true);
+            try {
+                const res = await fetch('/api/generate_outline', {
+                    method: 'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({
+                        topic: state.topic, thesis: state.thesis_text, 
+                        research_type: state.research_type, page_count: document.getElementById('page_count').value
+                    })
+                });
+                const data = await res.json();
+                document.getElementById('outline_input').value = data.result;
+                document.getElementById('outline_edit_area').classList.remove('hidden');
+            } catch(e) { alert("Error generating outline."); }
+            toggleBtn('btn_outline', 'spin_outline', false);
+        }
+        function saveOutline() {
+            state.outline_text = document.getElementById('outline_input').value;
+            if(!state.outline_text) return;
+            state.outline = true;
+            updateProgress(); alert("Outline saved!");
+        }
+
+        // --- Tab 6: Sections ---
+        async function draftSection() {
+            if(!state.outline) return alert("Save outline first.");
+            toggleBtn('btn_draft', 'spin_draft', true);
+            const secChoice = document.getElementById('section_choice').value;
+            const notes = document.getElementById('section_notes').value;
+            let snippet = state.literature.map(p => `- ${p.title} (${p.year}): ${p.abstract.substring(0,200)}`).join('\n');
+            
+            try {
+                const res = await fetch('/api/draft_section', {
+                    method: 'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({
+                        section_choice: secChoice, thesis: state.thesis_text, 
+                        research_type: state.research_type, outline: state.outline_text,
+                        notes: notes, lit_snippet: snippet
+                    })
+                });
+                const data = await res.json();
+                document.getElementById('draft_input').value = data.result;
+                document.getElementById('draft_edit_area').classList.remove('hidden');
+            } catch(e) { alert("Error drafting."); }
+            toggleBtn('btn_draft', 'spin_draft', false);
+        }
+        function saveDraft() {
+            const secChoice = document.getElementById('section_choice').value;
+            const text = document.getElementById('draft_input').value;
+            if(!text) return;
+            state.sections[secChoice] = text;
+            state.sections_done = true;
+            updateProgress();
+            
+            // Render saved list
+            const list = document.getElementById('saved_sections_list');
+            list.innerHTML = '';
+            Object.keys(state.sections).forEach(k => {
+                list.innerHTML += `<div class="card" style="padding:10px 15px;"><strong>${k}</strong> (${state.sections[k].split(' ').length} words)</div>`;
+            });
+            alert(`${secChoice} saved!`);
+        }
+
+        // --- Tab 7: Citations ---
+        async function validateDOI() {
+            const doi = document.getElementById('doi_input').value;
+            if(!doi) return;
+            toggleBtn('btn_doi', 'spin_doi', true);
+            try {
+                const res = await fetch('/api/validate_doi', {
+                    method: 'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({doi: doi})
+                });
+                const data = await res.json();
+                if(data.error) {
+                    document.getElementById('doi_result').innerText = "❌ " + data.error;
+                    document.getElementById('btn_add_ref').classList.add('hidden');
+                } else {
+                    state.current_doi_data = data;
+                    document.getElementById('doi_result').innerHTML = `<strong>Title:</strong> ${data.title}<br><strong>Authors:</strong> ${data.authors}<br><strong>APA:</strong> ${data.apa}`;
+                    document.getElementById('btn_add_ref').classList.remove('hidden');
+                }
+                document.getElementById('doi_result').classList.remove('hidden');
+            } catch(e) { alert("Error validating DOI."); }
+            toggleBtn('btn_doi', 'spin_doi', false);
+        }
+        function addReference() {
+            if(!state.current_doi_data) return;
+            state.references.push(state.current_doi_data);
+            state.citations = true;
+            updateProgress();
+            
+            const list = document.getElementById('refs_list');
+            list.innerHTML += `<div class="card" style="padding:10px 15px;">${state.current_doi_data.apa}</div>`;
+            document.getElementById('btn_add_ref').classList.add('hidden');
+            document.getElementById('doi_result').classList.add('hidden');
+            document.getElementById('doi_input').value = "";
+            state.current_doi_data = null;
+        }
+        
+        async function checkSimilarity() {
+            const txt = document.getElementById('sim_text').value;
+            if(!txt || state.literature.length===0) return alert("Need text and uploaded literature.");
+            toggleBtn('btn_sim', 'spin_sim', true);
+            let refTxt = state.literature.map(p => p.text).join(" ");
+            try {
+                const res = await fetch('/api/similarity', {
+                    method: 'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({text: txt, reference_text: refTxt})
+                });
+                const data = await res.json();
+                const pct = (data.score * 100).toFixed(1);
+                const el = document.getElementById('sim_result');
+                el.classList.remove('hidden');
+                if(data.score > 0.4) { el.style.color="red"; el.innerText = `🔴 High Similarity: ${pct}%`; }
+                else if(data.score > 0.2) { el.style.color="orange"; el.innerText = `🟡 Medium Similarity: ${pct}%`; }
+                else { el.style.color="green"; el.innerText = `🟢 Low Similarity: ${pct}%`; }
+            } catch(e) { alert("Check failed."); }
+            toggleBtn('btn_sim', 'spin_sim', false);
+        }
+
+        // --- Tab 9: Export ---
+        async function exportProject() {
+            if(Object.keys(state.sections).length === 0) return alert("Write at least one section.");
+            toggleBtn('btn_export', 'spin_export', true);
+            
+            const payload = {
+                title: document.getElementById('export_title').value || state.title,
+                author: document.getElementById('author_name').value || "Author",
+                journal: document.getElementById('target_journal').value || "Journal",
+                template: document.getElementById('export_template').value,
+                sections: state.sections,
+                outline: state.outline_text,
+                references: state.references
+            };
+            
+            try {
+                const res = await fetch('/api/export', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                if(res.ok) {
+                    const blob = await res.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = "paper.zip";
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                } else { alert("Export failed."); }
+            } catch(e) { alert("Export error."); }
+            toggleBtn('btn_export', 'spin_export', false);
+        }
+    </script>
+</body>
+</html>
