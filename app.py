@@ -1,423 +1,370 @@
 import os
-# Vercel-compatible matplotlib setup is mandatory
+# Force matplotlib to use the writable /tmp directory for its cache
 os.environ["MPLCONFIGDIR"] = "/tmp"
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
+import re
+import io
+import time
 import json
 import zipfile
-import io
-import difflib
-from datetime import datetime
+import textwrap
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
+
 from flask import Flask, render_template, request, jsonify, send_file
-import fitz  # PyMuPDF
-from habanero import Crossref
+from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
 from google import genai
-from google.genai import types
+import pandas as pd
+import jinja2
 
-app = Flask(__name__)
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
-# ── Ethical Guardrails ────────────────────────────────────────────────────────
-BLOCKED_PHRASES = [
-    "write complete paper", "write the entire paper", "generate full paper",
-    "complete paper", "write my paper", "write entire thesis", "write whole paper",
-    "do the whole paper", "full paper in one", "entire manuscript",
+load_dotenv()
+
+app = Flask(__name__, template_folder='templates')
+
+GEMINI_MODEL = "gemini-2.5-flash-lite"
+SECTION_TAGS = [
+    "ABSTRACT", "INTRODUCTION", "RELATED_WORK", "METHODOLOGY",
+    "RESULTS_AND_ANALYSIS", "DISCUSSION", "CONCLUSION", "ACKNOWLEDGEMENTS",
 ]
+WORDS_PER_PAGE_SINGLE = 450
+WORDS_PER_PAGE_DOUBLE = 600
+SECTION_WEIGHT = {
+    "ABSTRACT": 0.05, "INTRODUCTION": 0.16, "RELATED_WORK": 0.14,
+    "METHODOLOGY": 0.22, "RESULTS_AND_ANALYSIS": 0.20, "DISCUSSION": 0.12,
+    "CONCLUSION": 0.07, "ACKNOWLEDGEMENTS": 0.04,
+}
 
-def is_blocked_request(text: str) -> bool:
-    t = text.lower()
-    return any(phrase in t for phrase in BLOCKED_PHRASES)
+# --- Utilities ---
 
-# ── Gemini Helper ─────────────────────────────────────────────────────────────
-def call_gemini(prompt: str, max_tokens: int = 700) -> str:
-    """Single call to Gemini using the new google-genai SDK."""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return "⚠️ Gemini API key not configured in environment variables."
-    if is_blocked_request(prompt):
-        return "🚫 This request has been blocked by ethical guardrails. The assistant cannot generate a complete paper."
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-lite",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                max_output_tokens=max_tokens,
-                temperature=0.7,
-            )
-        )
-        return response.text.strip()
-    except Exception as e:
-        return f"⚠️ Gemini error: {str(e)}"
+def escape_for_latex(text: str) -> str:
+    text = str(text)
+    replacements = {
+        "\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$",
+        "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
-# ── PDF Extraction ────────────────────────────────────────────────────────────
-def extract_pdf_info(pdf_bytes: bytes, filename: str) -> dict:
-    """Extract lightweight metadata from PDF using PyMuPDF."""
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        meta = doc.metadata
-        text = ""
-        for i in range(min(2, len(doc))):
-            text += doc[i].get_text()
-            
-        abstract = ""
-        t_lower = text.lower()
-        abs_start = t_lower.find("abstract")
-        intro_start = t_lower.find("introduction")
-        if abs_start != -1:
-            end = intro_start if (intro_start != -1 and intro_start > abs_start) else abs_start + 800
-            abstract = text[abs_start:end].strip()[:600]
-        else:
-            abstract = text[:400].strip()
-            
-        full_text = ""
-        for i in range(min(10, len(doc))):
-            full_text += doc[i].get_text()
-        doc.close()
+def compute_section_targets(mode: str, value: int, two_col: bool) -> dict:
+    if mode == "pages":
+        wpp = WORDS_PER_PAGE_DOUBLE if two_col else WORDS_PER_PAGE_SINGLE
+        total_words = value * wpp
+    else:
+        total_words = value
         
-        return {
-            "title": meta.get("title") or filename,
-            "authors": meta.get("author") or "Unknown",
-            "year": meta.get("creationDate", "")[:4] or "Unknown",
-            "abstract": abstract,
-            "text": full_text[:8000], 
-        }
-    except Exception as e:
-        return {
-            "title": filename,
-            "authors": "Error",
-            "year": "Error",
-            "abstract": f"Could not extract: {str(e)}",
-            "text": ""
-        }
+    return {tag: max(80, int(total_words * w)) for tag, w in SECTION_WEIGHT.items()}
 
-# ── Overleaf / LaTeX Export ───────────────────────────────────────────────────
-LATEX_TEMPLATES = {
-    "IEEE": r"""\documentclass[conference]{IEEEtran}
+def fetch_arxiv_literature(query: str, max_results: int = 6):
+    if not query.strip(): query = "machine learning"
+    safe_query = urllib.parse.quote(query)
+    url = f"https://export.arxiv.org/api/query?search_query=all:{safe_query}&start=0&max_results={max_results}&sortBy=relevance"
+    
+    bibtex_entries, abstract_summaries = [], []
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            xml_data = response.read()
+        root = ET.fromstring(xml_data)
+        ns = {'atom': 'http://www.w3.org/2005/Atom'}
+        
+        for entry in root.findall('atom:entry', ns):
+            title = entry.find('atom:title', ns).text.replace('\n', ' ').strip()
+            summary = entry.find('atom:summary', ns).text.replace('\n', ' ').strip()
+            published = entry.find('atom:published', ns).text[:4]
+            authors = [a.find('atom:name', ns).text for a in entry.findall('atom:author', ns)]
+            author_str = " and ".join(authors)
+            
+            last_name = authors[0].split()[-1].lower() if authors else "unknown"
+            first_word = re.sub(r'[^a-zA-Z0-9]', '', title.split()[0].lower())
+            cite_key = f"{last_name}{published}{first_word}"
+            
+            bibtex = textwrap.dedent(f"""
+            @article{{{cite_key},
+              title={{{title}}},
+              author={{{author_str}}},
+              journal={{arXiv preprint}},
+              year={{{published}}}
+            }}""").strip()
+            bibtex_entries.append(bibtex)
+            abstract_summaries.append(f"[{cite_key}] {title} ({published}): {summary}")
+        return "\n\n".join(bibtex_entries), "\n\n".join(abstract_summaries)
+    except Exception:
+        return "", ""
+
+def call_gemini_with_retry(api_key: str, prompt: str, retries: int = 3) -> str:
+    client = genai.Client(api_key=api_key)
+    for attempt in range(retries):
+        try:
+            res = client.models.generate_content(
+                model=GEMINI_MODEL, contents=prompt,
+                config=genai.types.GenerateContentConfig(temperature=0.2)
+            )
+            return res.text
+        except Exception as e:
+            if "503" in str(e) or "429" in str(e):
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+            raise e
+    return ""
+
+def clean_llm_latex_output(raw_output: str) -> str:
+    clean_text = raw_output.strip()
+    clean_text = re.sub(r'^```[a-zA-Z]*\n', '', clean_text)
+    clean_text = re.sub(r'\n```$', '', clean_text)
+    return clean_text.strip()
+
+def generate_section_prompt(tag, title, arxiv_context, bibtex, user_notes, venue, previous_sections, target_words):
+    history = ""
+    if previous_sections:
+        history = "PREVIOUSLY GENERATED SECTIONS:\n"
+        for k, v in previous_sections.items():
+            history += f"--- {k} ---\n{v[:500]}... [truncated]\n\n"
+            
+    cite_keys = re.findall(r"@\w+\{(\w+),", bibtex)
+    cite_str = ", ".join(cite_keys) if cite_keys else "(none provided)"
+
+    return textwrap.dedent(f"""
+    You are an elite academic researcher writing a paper for {venue}. 
+    You are writing ONE specific section of a research paper.
+    PAPER TITLE: {title}
+    CURRENT SECTION TO WRITE: {tag}
+    TARGET WORD COUNT: ~{target_words} words.
+    REAL LITERATURE CONTEXT: {arxiv_context}
+    AVAILABLE CITATION KEYS: {cite_str}
+    USER NOTES FOR THIS PAPER: {user_notes}
+    {history}
+    INSTRUCTIONS:
+    1. Write ONLY the '{tag}' section. Do not write any other sections.
+    2. Write in formal, third-person academic LaTeX prose suitable for {venue}.
+    3. Use \\cite{{key}} frequently and accurately based on the Literature Context.
+    4. Do not output markdown code fences. Output raw text.
+    5. Do not output the section header (e.g., no \\section{{{tag}}}).
+    6. Ensure the narrative flows logically from the previously generated sections.
+    """).strip()
+
+def generate_academic_chart(api_key: str, paper_title: str, results_notes: str, figure_index: int):
+    client = genai.Client(api_key=api_key)
+    
+    # CRITICAL VERCEL FIX: Must write to /tmp
+    chart_filename = f"/tmp/generated_chart_{figure_index}.png" 
+    
+    prompt = f"""
+    Write an isolated Python script using matplotlib to generate a publication-quality chart.
+    Title: {paper_title}
+    Data: {results_notes}
+    Target Figure Filename: {chart_filename}
+    REQUIREMENTS:
+    1. Output ONLY raw executable Python code. No markdown.
+    2. Save file exactly as '{chart_filename}' using plt.savefig.
+    3. Use plt.close('all') at the end. Do not use plt.show().
+    """
+    try:
+        res = client.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt,
+            config=genai.types.GenerateContentConfig(temperature=0.1)
+        )
+        clean_code = res.text.strip().replace("```python", "").replace("```", "")
+        local_scope = {"plt": plt, "pd": pd, "re": re}
+        plt.close('all')
+        
+        # Execute the LLM's code
+        exec(clean_code, globals(), local_scope)
+        
+        # Read the file back from /tmp
+        if os.path.exists(chart_filename):
+            with open(chart_filename, "rb") as f:
+                img_bytes = f.read()
+            os.remove(chart_filename) # Clean up the tmp file
+            plt.close('all')
+            # Return just the base filename for the zip/latex process
+            return f"generated_chart_{figure_index}.png", img_bytes
+    except Exception as e:
+        print(f"Chart Gen Error: {e}")
+        plt.close('all')
+        return None
+
+LATEX_TMPL = r"""
+\documentclass[11pt[% if two_col %],twocolumn[% endif %]]{article}
+\usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
-\usepackage{cite}
-\usepackage{amsmath}
-\usepackage{hyperref}
-\title{{{title}}}
-\author{{{author}}}
-\begin{document}
-\maketitle
-\begin{abstract}
-{abstract}
-\end{abstract}
-{body}
-\bibliographystyle{{IEEEtran}}
-\bibliography{{references}}
-\end{document}
-""",
-    "Springer": r"""\documentclass[twocolumn]{{svjour3}}
-\usepackage[utf8]{inputenc}
-\usepackage{cite}
-\usepackage{hyperref}
-\journalname{{{journal}}}
-\title{{{title}}}
-\author{{{author}}}
-\institute{{{author} \at University}
+\usepackage{geometry}
+\geometry{[% if two_col %]letterpaper,margin=0.7in,columnsep=18pt[% else %]letterpaper,margin=1in[% endif %]}
+\usepackage{graphicx,hyperref,titlesec,authblk,xcolor}
+\usepackage[numbers]{natbib}
+\title{\vspace{-1.5em}\Large\bfseries [[ escaped_title ]]%
+[% if kw_raw %]\\\vspace{0.3em}\normalsize\textit{Keywords:}\ \small [[ escaped_kw ]][% endif %]}
+[% for a in authors %]
+\author[[[ loop.index ]]]{\textbf{[[ a.name ]]}[% if a.email %]\thanks{\href{mailto:[[ a.email ]]}{[[ a.email ]]}}[% endif %]}
+\affil[[[ loop.index ]]]{\small\textit{[[ a.affil ]]}}
+[% endfor %]
 \date{\today}
 \begin{document}
 \maketitle
-\begin{abstract}
-{abstract}
-\end{abstract}
-{body}
-\bibliographystyle{{spmpsci}}
-\bibliography{{references}}
+\begin{abstract}\noindent [[ sec.ABSTRACT ]]\end{abstract}
+\section{Introduction}\label{sec:intro}
+[[ sec.INTRODUCTION ]]
+\section{Related Work}\label{sec:related}
+[[ sec.RELATED_WORK ]]
+\section{Methodology}\label{sec:method}
+[[ sec.METHODOLOGY ]]
+[% if figs %]
+[% for f in figs %]
+\begin{figure}[ht]\centering
+\includegraphics[width=0.95\linewidth]{[[ f.fn ]]}
+\caption{[[ f.cap ]]}\label{fig:[[ loop.index ]]}
+\end{figure}
+[% endfor %]
+[% endif %]
+\section{Results and Analysis}\label{sec:results}
+[[ sec.RESULTS_AND_ANALYSIS ]]
+\section{Discussion}\label{sec:disc}
+[[ sec.DISCUSSION ]]
+\section{Conclusion}\label{sec:concl}
+[[ sec.CONCLUSION ]]
+\section*{Acknowledgements}
+[[ sec.ACKNOWLEDGEMENTS ]]
+[% if bibtex %]
+\begin{filecontents*}{\jobname.bib}
+[[ bibtex ]]
+\end{filecontents*}
+\bibliographystyle{unsrtnat}
+\bibliography{\jobname}
+[% endif %]
 \end{document}
-""",
-    "APA": r"""\documentclass[12pt,man]{{apa7}}
-\usepackage[utf8]{{inputenc}}
-\usepackage{{hyperref}}
-\title{{{title}}}
-\author{{{author}}}
-\date{{\today}}
-\begin{{document}}
-\maketitle
-{body}
-\printbibliography
-\end{{document}}
-""",
-    "Basic Article": r"""\documentclass[12pt]{{article}}
-\usepackage[utf8]{{inputenc}}
-\usepackage{{times}}
-\usepackage{{geometry}}
-\geometry{{margin=1in}}
-\usepackage{{hyperref}}
-\title{{{title}}}
-\author{{{author}}}
-\date{{\today}}
-\begin{{document}}
-\maketitle
-\tableofcontents
-\newpage
-{body}
-\bibliographystyle{{plain}}
-\bibliography{{references}}
-\end{{document}}
-""",
-}
+"""
 
-def build_latex_body(sections: dict, outline: str) -> str:
-    section_map = {
-        "Introduction": "\\section{Introduction}",
-        "Literature Review": "\\section{Literature Review}",
-        "Methodology": "\\section{Methodology}",
-        "Discussion": "\\section{Discussion}",
-        "Conclusion": "\\section{Conclusion}",
-    }
-    body = ""
-    for sec, cmd in section_map.items():
-        if sec in sections and sections[sec]:
-            safe = sections[sec].replace("&", "\\&").replace("%", "\\%").replace("_", "\\_")
-            body += f"{cmd}\n{safe}\n\n"
-    return body
+def render_latex(title, authors_list, two_col, keywords, sections, bibtex, figs=None):
+    env = jinja2.Environment(
+        block_start_string="[%", block_end_string="%]",
+        variable_start_string="[[", variable_end_string="]]",
+        autoescape=False
+    )
+    tmpl = env.from_string(LATEX_TMPL)
+    
+    clean_authors = []
+    for a in authors_list:
+        clean_authors.append({
+            "name": escape_for_latex(a.get("name","")),
+            "affil": escape_for_latex(a.get("affil","")),
+            "email": escape_for_latex(a.get("email","")),
+        })
 
-def build_bib(references: list) -> str:
-    bib = ""
-    for i, ref in enumerate(references):
-        key = f"ref{i+1}"
-        bib += f"@article{{{key},\n"
-        bib += f"  title   = {{{ref.get('title','')}}},\n"
-        bib += f"  author  = {{{ref.get('authors','')}}},\n"
-        bib += f"  journal = {{{ref.get('journal','')}}},\n"
-        bib += f"  year    = {{{ref.get('year','')}}},\n"
-        bib += f"  doi     = {{{ref.get('doi','')}}},\n"
-        bib += "}\n\n"
-    return bib
+    return tmpl.render(
+        escaped_title=escape_for_latex(title),
+        escaped_kw=escape_for_latex(keywords),
+        kw_raw=keywords.strip(),
+        authors=clean_authors,
+        two_col=two_col,
+        sec=sections,
+        bibtex=bibtex.strip(),
+        figs=figs or []
+    )
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+def build_zip(latex_src, bibtex_data, generated_figs, uploaded_files):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("main.tex", latex_src)
+        if bibtex_data.strip():
+            zf.writestr("references.bib", bibtex_data.strip())
+        
+        # Write LLM generated charts
+        for fname, fbytes in generated_figs:
+            zf.writestr(fname, fbytes)
+            
+        # Write User Uploaded Figures
+        for file in uploaded_files:
+            if file.filename:
+                safe_name = secure_filename(file.filename)
+                file.seek(0)
+                zf.writestr(safe_name, file.read())
+                
+    buf.seek(0)
+    return buf
+
+# --- Routes ---
+
 @app.route("/")
 def index():
     return render_template("index.html")
 
-@app.route("/api/extract_pdfs", methods=["POST"])
-def api_extract_pdfs():
-    if "files" not in request.files:
-        return jsonify({"error": "No files provided"}), 400
-    files = request.files.getlist("files")
-    results = []
-    for f in files:
-        file_bytes = f.read()
-        info = extract_pdf_info(file_bytes, f.filename)
-        results.append(info)
-    return jsonify({"papers": results})
+@app.route("/api/generate", methods=["POST"])
+def generate():
+    # Because we handle files, data comes in via form-data
+    api_key = os.getenv("GEMINI_API_KEY") or request.form.get("api_key")
+    if not api_key:
+        return jsonify({"error": "Gemini API Key missing"}), 400
 
-@app.route("/api/generate_gaps", methods=["POST"])
-def api_generate_gaps():
-    data = request.json
-    topic = data.get("topic", "")
-    research_type = data.get("research_type", "")
-    lit_context = data.get("lit_context", "")
+    title = request.form.get("title", "Untitled Paper")
+    keywords = request.form.get("keywords", "")
+    venue = request.form.get("venue", "Custom / Unspecified")
+    layout = request.form.get("layout", "single")
+    two_col = (layout == "double")
     
-    prompt = f"""You are helping an undergraduate student identify research gaps.
-
-Topic: {topic}
-Research type: {research_type}
-{"Literature summary:" + chr(10) + lit_context if lit_context else "No literature uploaded yet."}
-
-Identify exactly 3 research gaps. For each gap provide:
-GAP N: [one sentence description]
-BIAS WARNING: [one sentence about potential bias]
-EVIDENCE STRENGTH: [Weak / Moderate / Strong]
-
-Keep each gap under 50 words. Be specific and scholarly."""
-
-    result = call_gemini(prompt, max_tokens=500)
-    return jsonify({"result": result})
-
-@app.route("/api/generate_thesis", methods=["POST"])
-def api_generate_thesis():
-    data = request.json
-    prompt = f"""You are a thesis writing coach for an undergraduate student.
-
-Topic: {data.get("topic")}
-Research Type: {data.get("research_type")}
-Research Gap: {data.get("gap")}
-
-Generate exactly 3 thesis statement options. For each:
-
-OPTION [A/B/C]:
-Thesis: [one clear, arguable thesis sentence]
-Strength: [one sentence]
-Weakness: [one sentence]
-Researchability: [score 1-10 and one sentence reason]
-
-Keep each option under 80 words total."""
-
-    result = call_gemini(prompt, max_tokens=600)
-    return jsonify({"result": result})
-
-@app.route("/api/generate_outline", methods=["POST"])
-def api_generate_outline():
-    data = request.json
-    prompt = f"""Create a short academic paper outline (bullet structure only, no prose).
-
-Topic: {data.get("topic")}
-Thesis: {data.get("thesis")}
-Research Type: {data.get("research_type")}
-Approximate pages: {data.get("page_count")}
-
-Format:
-1. Introduction
-   • Background
-   • Problem Statement
-   • Thesis
-2. Literature Review
-   • [2-3 thematic sub-headings]
-3. Methodology
-   • [approach and tools]
-4. Discussion
-   • [key argument points]
-5. Conclusion
-   • Summary
-   • Future Work
-
-Keep sub-bullets to ONE line each. No prose. No explanations."""
-
-    result = call_gemini(prompt, max_tokens=400)
-    return jsonify({"result": result})
-
-@app.route("/api/draft_section", methods=["POST"])
-def api_draft_section():
-    data = request.json
-    section_choice = data.get("section_choice")
-    thesis = data.get("thesis")
-    research_type = data.get("research_type")
-    outline = data.get("outline", "")
-    notes = data.get("notes", "")
-    lit_snippet = data.get("lit_snippet", "")
+    length_mode = request.form.get("length_mode", "pages")
+    length_val = int(request.form.get("length_val", 4 if length_mode == 'pages' else 2500))
     
-    prompt = f"""You are assisting an undergraduate student draft a {section_choice} section.
+    user_bibtex = request.form.get("bibtex", "")
+    
+    # Parse JSON strings passed via form-data
+    authors = json.loads(request.form.get("authors", "[]"))
+    notes = json.loads(request.form.get("notes", "{}"))
+    
+    uploaded_files = request.files.getlist('figures')
 
-Paper Thesis: {thesis}
-Research Type: {research_type}
-{"Outline context: " + outline[:400] if outline else ""}
-{"Student notes: " + notes if notes else ""}
-{"Relevant literature:" + chr(10) + lit_snippet if lit_snippet else ""}
+    sec_targets = compute_section_targets(length_mode, length_val, two_col)
+    compiled_notes = f"Abstract: {notes.get('abstract','')}\nIntro: {notes.get('intro','')}\nMethod: {notes.get('method','')}\nResults: {notes.get('results','')}\nExtra: {notes.get('extra','')}"
 
-STRICT RULES:
-- Maximum 400 words
-- Do NOT invent studies, experiments, data, or statistics
-- Only reference literature provided above
-- Use hedging language (suggests, may indicate, has been argued)
-- Write the {section_choice} only — no other sections
-- Academic tone appropriate for an undergraduate paper
-
-Write the {section_choice} section now:"""
-
-    result = call_gemini(prompt, max_tokens=600)
-    return jsonify({"result": result})
-
-@app.route("/api/validate_doi", methods=["POST"])
-def api_validate_doi():
-    doi = request.json.get("doi", "").strip().replace("https://doi.org/", "").replace("http://dx.doi.org/", "")
     try:
-        cr = Crossref()
-        result = cr.works(ids=doi)
-        msg = result.get("message", {})
-        authors_raw = msg.get("author", [])
-        authors = ", ".join(
-            f"{a.get('family', '')}, {a.get('given', '')[:1]}." for a in authors_raw[:5]
-        ).strip(", ")
-        year = ""
-        dp = msg.get("published-print") or msg.get("published-online")
-        if dp:
-            parts = dp.get("date-parts", [[]])
-            year = str(parts[0][0]) if parts and parts[0] else ""
-        title = msg.get("title", [""])[0]
-        journal = (msg.get("container-title") or [""])[0]
-        volume = msg.get("volume", "")
-        issue = msg.get("issue", "")
-        pages = msg.get("page", "")
-        publisher = msg.get("publisher", "")
+        # 1. Fetch Literature
+        real_bibtex, arxiv_summaries = fetch_arxiv_literature(f"{title} {keywords}", 6)
+        combined_bibtex = f"{user_bibtex}\n\n{real_bibtex}".strip()
 
-        def fmt_apa():
-            a = authors or "Unknown"
-            y = f"({year})." if year else ""
-            t = f"{title}." if title else ""
-            j = f"*{journal}*," if journal else ""
-            v = f" *{volume}*" if volume else ""
-            i_ = f"({issue})," if issue else ""
-            p = f" {pages}." if pages else ""
-            return f"{a} {y} {t} {j}{v}{i_}{p} https://doi.org/{doi}"
+        # 2. Generate Chart
+        generated_charts = []
+        if notes.get("results"):
+            chart = generate_academic_chart(api_key, title, notes.get("results"), 1)
+            if chart: generated_charts.append(chart)
 
-        def fmt_mla():
-            al = authors_raw
-            if al:
-                first = f"{al[0].get('family','')}, {al[0].get('given','')}"
-                rest = ", ".join(f"{a.get('given','')} {a.get('family','')}" for a in al[1:3])
-                auth_str = f"{first}{', and ' + rest if rest else ''}"
-            else:
-                auth_str = "Unknown"
-            return f'{auth_str}. "{title}." *{journal}*, vol. {volume}, no. {issue}, {year}, pp. {pages}.'
+        # 3. Generate Sections (Sequential)
+        sections_dict = {}
+        for tag in SECTION_TAGS:
+            prompt = generate_section_prompt(
+                tag, title, arxiv_summaries, combined_bibtex, compiled_notes, venue,
+                sections_dict, sec_targets.get(tag, 300)
+            )
+            out = call_gemini_with_retry(api_key, prompt)
+            sections_dict[tag] = clean_llm_latex_output(out)
 
-        def fmt_chicago():
-            if authors_raw:
-                auth_str = "; ".join(f"{a.get('family','')} {a.get('given','')}." for a in authors_raw[:3])
-            else:
-                auth_str = "Unknown"
-            return f'{auth_str} "{title}." *{journal}* {volume}, no. {issue} ({year}): {pages}.'
+        # 4. Compile Figure List for LaTeX
+        fig_list = []
+        for file in uploaded_files:
+            if file.filename:
+                fig_list.append({"fn": secure_filename(file.filename), "cap": f"Uploaded observation: {file.filename}"})
+        for fname, _ in generated_charts:
+            fig_list.append({"fn": fname, "cap": "Programmatic analytical verification."})
 
-        return jsonify({
-            "doi": doi, "title": title, "authors": authors, "year": year,
-            "journal": journal, "volume": volume, "issue": issue, "pages": pages,
-            "publisher": publisher, "apa": fmt_apa(), "mla": fmt_mla(), "chicago": fmt_chicago()
-        })
+        # 5. Render and ZIP
+        latex_src = render_latex(title, authors, two_col, keywords, sections_dict, combined_bibtex, fig_list)
+        zip_buf = build_zip(latex_src, combined_bibtex, generated_charts, uploaded_files)
+        
+        return send_file(
+            zip_buf,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name="sciwrite_project.zip"
+        )
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": str(e)}), 500
 
-@app.route("/api/similarity", methods=["POST"])
-def api_similarity():
-    data = request.json
-    text_a = data.get("text", "")
-    text_b = data.get("reference_text", "")
-    if not text_a or not text_b:
-        return jsonify({"score": 0.0})
-    score = difflib.SequenceMatcher(None, text_a[:3000], text_b[:3000]).ratio()
-    return jsonify({"score": score})
-
-@app.route("/api/export", methods=["POST"])
-def api_export():
-    data = request.json
-    title = data.get("title", "Untitled")
-    author = data.get("author", "Author")
-    journal = data.get("journal", "Journal")
-    template_key = data.get("template", "Basic Article")
-    sections = data.get("sections", {})
-    outline = data.get("outline", "")
-    references = data.get("references", [])
-
-    tmpl = LATEX_TEMPLATES.get(template_key, LATEX_TEMPLATES["Basic Article"])
-    body = build_latex_body(sections, outline)
-    abstract = sections.get("Introduction", "")[:300] + "..."
-    
-    try:
-        latex = tmpl.format(title=title, author=author, journal=journal, abstract=abstract, body=body)
-    except KeyError:
-        latex = body
-
-    meta = {
-        "title": title, "author": author, "journal": journal, "template": template_key,
-        "generated_at": datetime.now().isoformat(), "sections": list(sections.keys()),
-        "references_count": len(references),
-    }
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("main.tex", latex)
-        zf.writestr("references.bib", build_bib(references))
-        zf.writestr("project_metadata.json", json.dumps(meta, indent=2))
-        for sec, text in sections.items():
-            safe_name = sec.lower().replace(" ", "_")
-            zf.writestr(f"sections/{safe_name}.txt", text or "")
-    
-    buf.seek(0)
-    return send_file(buf, as_attachment=True, download_name="paper.zip", mimetype="application/zip")
+if __name__ == "__main__":
+    app.run(debug=True)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
